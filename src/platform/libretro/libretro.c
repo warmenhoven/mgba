@@ -22,6 +22,9 @@
 #include <mgba/gba/core.h>
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/gba.h>
+#include <audio/audio_resampler.h>
+#include <audio/conversion/float_to_s16.h>
+#include <audio/conversion/s16_to_float.h>
 #endif
 #include <mgba-util/memory.h>
 #include <mgba-util/vfs.h>
@@ -67,7 +70,6 @@ static bool libretro_supports_bitmasks = false;
 static void GBARetroLog(struct mLogger* logger, int category, enum mLogLevel level, const char* format, va_list args);
 
 static void _postAudioBuffer(struct mAVStream*, struct mAudioBuffer*);
-static void _audioRateChanged(struct mAVStream*, unsigned rate);
 static void _setRumble(struct mRumbleIntegrator*, float level);
 static uint8_t _readLux(struct GBALuminanceSource* lux);
 static void _updateLux(struct GBALuminanceSource* lux);
@@ -147,6 +149,16 @@ static const int keymap[] = {
 #endif
 const char* const projectVersion = "0.11-dev" GIT_VERSION;
 const char* const projectName = "mGBA";
+
+#ifdef M_CORE_GBA
+#define GBA_CORE_AUDIO_SAMPLE_RATE 44100
+static unsigned MAX_AUDIO_FRAMES = 2048;
+static const retro_resampler_t *resampler;
+static void *resampler_audio_data;
+static float *audio_in_buffer_float;
+static float *audio_out_buffer_float;
+static int16_t *audio_out_buffer_s16;
+#endif
 
 /* Maximum number of consecutive frames that
  * can be skipped */
@@ -1270,8 +1282,6 @@ static void _doDeferredSetup(void) {
 	if (!core->loadSave(core, save)) {
 		save->close(save);
 	}
-	stream.audioRateChanged = _audioRateChanged;
-    _audioRateChanged(NULL, 0);
 	deferredSetup = false;
 }
 
@@ -1351,7 +1361,12 @@ void retro_get_system_av_info(struct retro_system_av_info* info) {
 
 	info->geometry.aspect_ratio = width / (double) height;
 	info->timing.fps = core->frequency(core) / (float) core->frameCycles(core);
-	info->timing.sample_rate = core->audioSampleRate(core);
+#ifdef M_CORE_GBA
+	if (core->platform(core) == mPLATFORM_GBA)
+		info->timing.sample_rate = GBA_CORE_AUDIO_SAMPLE_RATE;
+	else
+#endif
+		info->timing.sample_rate = core->audioSampleRate(core);
 }
 
 void retro_init(void) {
@@ -1432,7 +1447,17 @@ void retro_init(void) {
 	stream.postAudioFrame = NULL;
 	stream.postAudioBuffer = NULL;
 	stream.postVideoFrame = NULL;
-	/*stream.audioRateChanged = _audioRateChanged;*/
+
+#ifdef M_CORE_GBA
+	retro_resampler_realloc(&resampler_audio_data, &resampler, "sinc", RESAMPLER_QUALITY_HIGHEST, 1.0);
+
+	audio_in_buffer_float  = malloc(2 * MAX_AUDIO_FRAMES * sizeof(float));
+	audio_out_buffer_float = malloc(2 * MAX_AUDIO_FRAMES * sizeof(float));
+	audio_out_buffer_s16   = malloc(2 * MAX_AUDIO_FRAMES * sizeof(int16_t));
+
+	convert_s16_to_float_init_simd();
+	convert_float_to_s16_init_simd();
+#endif
 
 	imageSource.startRequestImage = _startImage;
 	imageSource.stopRequestImage = _stopImage;
@@ -1470,6 +1495,18 @@ void retro_deinit(void) {
 	}
 	audioSampleBufferSize = 0;
 	audioSamplesPerFrameAvg = 0.0f;
+
+#ifdef M_CORE_GBA
+	if (resampler && resampler_audio_data)
+	{
+		resampler->free(resampler_audio_data);
+		resampler = NULL;
+		resampler_audio_data = NULL;
+		free(audio_in_buffer_float);
+		free(audio_out_buffer_float);
+		free(audio_out_buffer_s16);
+	}
+#endif
 
 	if (sensorStateCallback) {
 		sensorStateCallback(0, RETRO_SENSOR_ACCELEROMETER_DISABLE, EVENT_RATE);
@@ -1520,6 +1557,56 @@ int16_t cycleturbo(bool a, bool b, bool l, bool r) {
 
 	return buttons;
 }
+
+#ifdef M_CORE_GBA
+static void _postResample(const void *buffer, size_t frames)
+{
+	size_t max_frames, remain_frames;
+	uint32_t i;
+	double ratio;
+	struct resampler_data data = {0};
+	int16_t *out      = NULL;
+	int16_t *raw_data = (int16_t*)buffer;
+	uint8_t *p        = (uint8_t*)buffer;
+	unsigned GameFreq = core->audioSampleRate(core);
+
+audio_batch:
+	out               = NULL;
+	ratio             = ((float)GBA_CORE_AUDIO_SAMPLE_RATE) / GameFreq;
+	max_frames        = (GameFreq > GBA_CORE_AUDIO_SAMPLE_RATE) ? MAX_AUDIO_FRAMES : (size_t)(MAX_AUDIO_FRAMES / ratio - 1);
+	remain_frames     = 0;
+
+	if (frames > max_frames)
+	{
+		remain_frames = frames - max_frames;
+		frames = max_frames;
+	}
+
+	data.data_in      = audio_in_buffer_float;
+	data.data_out     = audio_out_buffer_float;
+	data.input_frames = frames;
+	data.ratio        = ratio;
+
+	convert_s16_to_float(audio_in_buffer_float, raw_data, frames * 2, 1.0f);
+	resampler->process(resampler_audio_data, &data);
+	convert_float_to_s16(audio_out_buffer_s16, audio_out_buffer_float, data.output_frames * 2);
+
+	out                    = audio_out_buffer_s16;
+
+	while (data.output_frames)
+	{
+		size_t ret          = audioCallback(out, data.output_frames);
+		data.output_frames -= ret;
+		out                += ret * 2;
+	}
+	if (remain_frames)
+	{
+		raw_data = raw_data + frames * 2;
+		frames   = remain_frames;
+		goto audio_batch;
+	}
+}
+#endif
 
 void retro_run(void) {
 	if (deferredSetup) {
@@ -1715,9 +1802,9 @@ void retro_run(void) {
 			int produced = mAudioBufferRead(buffer, audioSampleBuffer, samplesToRead);
 			if (produced > 0) {
 				if (audioLowPassEnabled) {
-					_audioLowPassFilter(audioSampleBuffer, produced);
+					_audioLowPassFilter(audioSampleBuffer, produced );
 				}
-				audioCallback(audioSampleBuffer, (size_t)produced);
+				_postResample(audioSampleBuffer, (size_t)produced);
 			}
 		}
 	}
@@ -2414,13 +2501,6 @@ static void _postAudioBuffer(struct mAVStream* stream, struct mAudioBuffer* buff
 		}
 		audioCallback(audioSampleBuffer, (size_t)produced);
 	}
-}
-
-static void _audioRateChanged(struct mAVStream* stream, unsigned rate) {
-	UNUSED(stream);
-	struct retro_system_av_info info;
-	retro_get_system_av_info(&info);
-	environCallback(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
 }
 
 static void _setRumble(struct mRumbleIntegrator* rumble, float level) {

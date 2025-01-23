@@ -113,6 +113,23 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
 					$(CORE_DIR)/src/gba/video.c \
 					$(CORE_DIR)/src/platform/libretro/memory.c \
 					$(CORE_DIR)/src/platform/libretro/libretro.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/audio/conversion/float_to_s16.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/audio/conversion/s16_to_float.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/audio/resampler/audio_resampler.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/audio/resampler/drivers/nearest_resampler.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/audio/resampler/drivers/sinc_resampler.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/encodings/encoding_utf.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/features/features_cpu.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/file/config_file.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/file/config_file_userdata.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/file/file_path.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/file/file_path_io.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/lists/string_list.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/memmap/memalign.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/streams/file_stream.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/string/stdstring.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/time/rtime.c \
+					$(CORE_DIR)/src/platform/libretro/libretro-common/vfs/vfs_implementation.c \
 					$(CORE_DIR)/src/sm83/isa-sm83.c \
 					$(CORE_DIR)/src/sm83/sm83.c \
 					$(CORE_DIR)/src/third-party/inih/ini.c \
